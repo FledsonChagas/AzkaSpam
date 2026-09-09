@@ -3,7 +3,7 @@
 Docker-based IMAP spam filter for any IMAP server that supports IDLE.
 Designed to run 24/7 on Unraid (templates included) or any Linux host with
 Docker. Per-account modes, move-based Bayes training, never deletes mail.
-Optional read-only web dashboard with per-user access levels.
+Optional web dashboard with per-user access levels and admin config editing.
 Multi-arch image (`linux/amd64`, `linux/arm64`).
 
 ## Architecture
@@ -550,6 +550,13 @@ Pages:
 - `/events`   tail of the full events table
 - `/accounts` per-account scan / learn / fail counts, total spam &
               ham learns, plus safe-mode
+- `/config`   admin-only `accounts.yml` editor with YAML validation and a
+              last-good backup in `state/accounts.yml.last-good`
+
+The filter reads `accounts.yml` at startup. After saving changes in
+`/config`, restart the `spamfilter` container so account settings are
+reloaded. If the page says the file is not writable, mount
+`accounts.yml` read-write instead of read-only.
 
 ---
 
@@ -644,8 +651,9 @@ Restore is the reverse: stop the four containers, extract the tar over
 - **No allowlist.** Intentional. rspamd's DKIM/SPF symbols already give
   negative score to aligned mail. Fix misclassifications by training, not
   by allowlisting.
-- **Dashboard is read-only.** It shows activity; it has no controls to
-  move, learn, or change config. Inspect deeper via SQLite if needed.
+- **Dashboard controls are intentionally narrow.** Admins can edit
+  `accounts.yml`; message moves, manual learns, and safe-mode changes are
+  still handled outside the dashboard for now.
 - **IDLE re-issued every `idle_timeout` (default 1500s).** Lower it if your
   server drops idle connections faster.
 - **No multi-host coordination.** Don't run two filter instances against

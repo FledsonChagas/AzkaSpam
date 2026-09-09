@@ -1,10 +1,10 @@
-"""Read-only web dashboard for the imap-spamfilter.
+"""Web dashboard for the imap-spamfilter.
 
 Disabled by default. Enable it by configuring at least one dashboard
 user (see below); the daemon then serves it on a fixed internal port
 8080 and the orchestrator maps a host port. Reads the SQLite state DB
-read-only and queries rspamd /stat. Intended for LAN access behind a
-reverse proxy that terminates TLS.
+read-only, queries rspamd /stat, and lets admin users edit accounts.yml.
+Intended for LAN access behind a reverse proxy that terminates TLS.
 
 Authentication is a server-side session with a real login form.
 Configure users one of two ways:
@@ -35,6 +35,7 @@ from functools import wraps
 from pathlib import Path
 
 import requests
+import yaml
 from flask import (
     Flask,
     Response,
@@ -52,6 +53,7 @@ STATE_DIR = Path(os.environ.get("STATE_DIR", "/state"))
 DB_PATH = STATE_DIR / "spamfilter.db"
 SECRET_PATH = STATE_DIR / "dashboard_secret"
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "/app/accounts.yml"))
+CONFIG_BACKUP_PATH = STATE_DIR / "accounts.yml.last-good"
 RSPAMD_CONTROLLER_URL = os.environ.get(
     "RSPAMD_LEARN_URL", "http://spamfilter-rspamd:11334"
 )
@@ -228,6 +230,32 @@ def _requires_auth(view):
     return wrapped
 
 
+def _requires_admin(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user"):
+            return redirect(url_for("login", next=request.path))
+        if not _current_scope()[0]:
+            return Response("Admin access required.\n", 403, mimetype="text/plain")
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _csrf_token() -> str:
+    token = session.get("csrf")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf"] = token
+    return token
+
+
+def _check_csrf() -> bool:
+    return hmac.compare_digest(
+        str(session.get("csrf", "")), str(request.form.get("csrf", ""))
+    )
+
+
 # ----- helpers --------------------------------------------------------------
 
 
@@ -245,6 +273,72 @@ def _h(value) -> str:
     (subject, sender, Message-Id, ...) are attacker-controlled, so every
     such interpolation must pass through here."""
     return str(escape("" if value is None else value))
+
+
+def _validate_config_text(text: str) -> tuple[dict, list[str]]:
+    """Validate the editable accounts.yml shape without importing filter.py.
+
+    The running daemon imports dashboard.py from filter.py; importing filter.py
+    back here would create a second copy of the daemon module under another
+    name. Keep this validation intentionally structural and let the daemon keep
+    enforcing the deeper runtime checks on restart.
+    """
+    errors: list[str] = []
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError as ex:
+        return ({}, [f"YAML parse error: {ex}"])
+    if not isinstance(parsed, dict):
+        return ({}, ["Top-level YAML value must be a mapping."])
+    accounts = parsed.get("accounts")
+    if not isinstance(accounts, list) or not accounts:
+        errors.append("Missing non-empty 'accounts' list.")
+        return (parsed, errors)
+    seen: set[str] = set()
+    for idx, account in enumerate(accounts, start=1):
+        prefix = f"accounts[{idx}]"
+        if not isinstance(account, dict):
+            errors.append(f"{prefix} must be a mapping.")
+            continue
+        for key in ("name", "imap_host", "user", "password"):
+            if not account.get(key):
+                errors.append(f"{prefix}.{key} is required.")
+        name = str(account.get("name") or "").strip()
+        if name:
+            if name in seen:
+                errors.append(f"Duplicate account name: {name}")
+            seen.add(name)
+        mode = account.get("mode")
+        if mode and mode not in {"shadow", "flag", "move"}:
+            errors.append(f"{prefix}.mode must be shadow, flag, or move.")
+    defaults = parsed.get("defaults")
+    if defaults is not None and not isinstance(defaults, dict):
+        errors.append("defaults must be a mapping when present.")
+    return (parsed, errors)
+
+
+def _config_accounts_table(parsed: dict) -> str:
+    accounts = parsed.get("accounts") if isinstance(parsed, dict) else []
+    if not isinstance(accounts, list):
+        accounts = []
+    rows = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        rows.append(
+            f"<tr><td>{_h(account.get('name'))}</td>"
+            f"<td>{_h(account.get('imap_host'))}</td>"
+            f"<td>{_h(account.get('user'))}</td>"
+            f"<td>{_h(account.get('mode') or 'shadow')}</td>"
+            f"<td class=\"num\">{_h(account.get('threshold') or '8.0')}</td></tr>"
+        )
+    return (
+        '<div class="card"><h2>Configured accounts</h2><div class="tw"><table>'
+        '<tr><th>Name</th><th>IMAP host</th><th>User</th><th>Mode</th>'
+        '<th class=num>Threshold</th></tr>'
+        + ("".join(rows) or '<tr><td colspan=5 class=muted>(none)</td></tr>')
+        + "</table></div></div>"
+    )
 
 
 def _fmt_ts(ts):
@@ -478,6 +572,17 @@ svg.spark polyline { fill:none; stroke:var(--accent); stroke-width:2;
   border:1px solid var(--border); color:var(--text); font-size:0.85em; }
 .filterbar a.active { background:var(--accent); border-color:var(--accent);
   color:#fff; }
+.form-actions { display:flex; flex-wrap:wrap; gap:0.6em; align-items:center;
+  margin-top:0.8em; }
+.btn { border:0; border-radius:7px; background:var(--accent); color:#fff;
+  padding:0.55em 0.9em; font-weight:650; cursor:pointer; }
+.btn.secondary { background:var(--surface-2); color:var(--text);
+  border:1px solid var(--border); text-decoration:none; }
+textarea.config-editor { width:100%; min-height:54vh; resize:vertical;
+  padding:0.85em; border-radius:8px; border:1px solid var(--border);
+  background:var(--bg); color:var(--text); font:13px/1.45 ui-monospace,
+  SFMono-Regular,Consolas,"Liberation Mono",monospace; tab-size:2; }
+.help { color:var(--muted); font-size:0.88em; margin:0.25em 0 0.8em; }
 footer { font-size:0.78em; color:var(--muted); padding:1em 1.3em;
   text-align:center; }
 .login-wrap { max-width:320px; margin:8vh auto; padding:0 1em; }
@@ -516,6 +621,7 @@ BASE = """<!doctype html>
   <a href="/learned" {% if active=='learned' %}class="active"{% endif %}>Learned</a>
   <a href="/events" {% if active=='events' %}class="active"{% endif %}>Events</a>
   <a href="/accounts" {% if active=='accounts' %}class="active"{% endif %}>Accounts</a>
+  {% if is_admin %}<a href="/config" {% if active=='config' %}class="active"{% endif %}>Config</a>{% endif %}
   <span class="spacer"></span>
   {% if user %}<span class="who">{{ user }}{% if is_admin %} &middot; admin{% endif %}</span>
   <a href="/logout">Log out</a>{% endif %}
@@ -524,7 +630,7 @@ BASE = """<!doctype html>
 <h1>{{ title }}</h1>
 {{ body|safe }}
 </main>
-<footer>imap-spamfilter dashboard &middot; read-only</footer>
+<footer>imap-spamfilter dashboard</footer>
 </body></html>
 """
 
@@ -972,6 +1078,80 @@ def accounts_view():
            or '<tr><td colspan=9 class=muted>(no accounts seen yet)</td></tr>')
         + "</table></div></div>")
     return render("Accounts", "accounts", body)
+
+
+@app.route("/config", methods=["GET", "POST"])
+@_requires_admin
+def config_view():
+    message = ""
+    message_cls = "ok"
+    current = ""
+    parsed: dict = {}
+
+    try:
+        current = CONFIG_PATH.read_text()
+    except OSError as ex:
+        message = f"Could not read {CONFIG_PATH}: {ex}"
+        message_cls = "warn"
+
+    if request.method == "POST":
+        submitted = request.form.get("config", "")
+        parsed, errors = _validate_config_text(submitted)
+        if not _check_csrf():
+            message = "Security token expired. Reload and try again."
+            message_cls = "warn"
+            current = submitted
+        elif errors:
+            message = "Config not saved: " + "; ".join(errors)
+            message_cls = "warn"
+            current = submitted
+        else:
+            try:
+                if current:
+                    CONFIG_BACKUP_PATH.write_text(current)
+                    CONFIG_BACKUP_PATH.chmod(0o600)
+                CONFIG_PATH.write_text(submitted.rstrip() + "\n")
+                current = submitted.rstrip() + "\n"
+                message = (
+                    "Config saved. Restart the spamfilter container to load "
+                    "the new accounts.yml."
+                )
+                message_cls = "ok"
+            except OSError as ex:
+                message = f"Config valid, but could not save {CONFIG_PATH}: {ex}"
+                message_cls = "warn"
+                current = submitted
+
+    if not parsed:
+        parsed, _errors = _validate_config_text(current) if current else ({}, [])
+
+    writable = os.access(CONFIG_PATH, os.W_OK)
+    if not writable and not message:
+        message = (
+            f"{CONFIG_PATH} is not writable by the dashboard process. "
+            "Mount accounts.yml read-write to edit it here."
+        )
+        message_cls = "warn"
+
+    banner = f'<div class="banner {message_cls}">{_h(message)}</div>' if message else ""
+    body = (
+        banner
+        + _config_accounts_table(parsed)
+        + '<div class="card"><h2>Edit accounts.yml</h2>'
+        + '<p class="help">Changes are saved to accounts.yml after validation. '
+        + 'The running filter reads this file at startup, so restart the '
+        + 'spamfilter container after saving.</p>'
+        + '<form method="post">'
+        + f'<input type="hidden" name="csrf" value="{_h(_csrf_token())}">'
+        + '<textarea class="config-editor" name="config" spellcheck="false">'
+        + _h(current)
+        + '</textarea><div class="form-actions">'
+        + '<button class="btn" type="submit">Save config</button>'
+        + '<a class="btn secondary" href="/config">Reload from disk</a>'
+        + f'<span class="muted">Backup: <code>{_h(CONFIG_BACKUP_PATH)}</code></span>'
+        + '</div></form></div>'
+    )
+    return render("Config", "config", body)
 
 
 # ----- entrypoint -----------------------------------------------------------

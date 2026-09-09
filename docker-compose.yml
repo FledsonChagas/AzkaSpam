@@ -52,7 +52,8 @@ services:
     logging: *log-rotate
     depends_on: [spamfilter-rspamd]
     volumes:
-      - /mnt/user/appdata/spamfilter/accounts.yml:/app/accounts.yml:ro
+      # Writable so dashboard admins can edit accounts.yml from /config.
+      - /mnt/user/appdata/spamfilter/accounts.yml:/app/accounts.yml
       - /mnt/user/appdata/spamfilter/state:/state
     environment:
       - RSPAMD_SCAN_URL=http://spamfilter-rspamd:11333/checkv2
