@@ -8,7 +8,7 @@
 - route: review-only, standard adoption setup, secure-change API foundation
 - risk: secure
 - branch: main
-- commit: c720d0e for AutoCast adoption; API foundation pending
+- commit: c720d0e for AutoCast adoption; a53a342 for API foundation
 
 ## Pilot Review Evidence
 
@@ -54,6 +54,8 @@ Files changed:
 | `git diff --stat` | passed | No tracked runtime files changed. |
 | `python -m py_compile filter\dashboard.py filter\filter.py filter\test_api.py` | passed | Syntax check for API changes. |
 | `python -m pytest filter` | passed | 16 tests passed, including new API tests. |
+| `python -m py_compile filter\dashboard.py filter\filter.py filter\test_api.py` | passed | Post-review test hardening syntax check. |
+| `python -m pytest filter` | passed | 21 tests passed after expanded API test suite. |
 
 ## API Foundation Evidence
 

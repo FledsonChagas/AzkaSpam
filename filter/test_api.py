@@ -8,14 +8,15 @@ import tempfile
 import time
 
 os.environ.setdefault("STATE_DIR", tempfile.mkdtemp(prefix="sf_api_test_"))
-os.environ.setdefault("DASHBOARD_USER", "admin")
-os.environ.setdefault("DASHBOARD_PASSWORD", "secret")
 
 import dashboard  # noqa: E402
 import filter as f  # noqa: E402
 
 
 def _seed(tmp_path, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_USER", "admin")
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    monkeypatch.delenv("DASHBOARD_USERS", raising=False)
     db_path = tmp_path / "spamfilter.db"
     config_path = tmp_path / "accounts.yml"
     config_path.write_text(
@@ -78,6 +79,23 @@ def test_api_protected_routes_return_json_401(tmp_path, monkeypatch):
     assert resp.get_json() == {"error": "unauthorized"}
 
 
+def test_api_me_anonymous(tmp_path, monkeypatch):
+    client = _seed(tmp_path, monkeypatch)
+    resp = client.get("/api/auth/me")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"authenticated": False}
+
+
+def test_api_login_invalid_credentials(tmp_path, monkeypatch):
+    client = _seed(tmp_path, monkeypatch)
+    resp = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "wrong"},
+    )
+    assert resp.status_code == 401
+    assert resp.get_json() == {"error": "invalid_credentials"}
+
+
 def test_api_login_and_me(tmp_path, monkeypatch):
     client = _seed(tmp_path, monkeypatch)
     resp = _login(client)
@@ -90,6 +108,17 @@ def test_api_login_and_me(tmp_path, monkeypatch):
     resp = client.get("/api/auth/me")
     assert resp.status_code == 200
     assert resp.get_json()["user"] == "admin"
+
+
+def test_api_logout_clears_session(tmp_path, monkeypatch):
+    client = _seed(tmp_path, monkeypatch)
+    _login(client)
+    resp = client.post("/api/auth/logout")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"authenticated": False}
+
+    resp = client.get("/api/messages")
+    assert resp.status_code == 401
 
 
 def test_api_accounts_masks_passwords(tmp_path, monkeypatch):
@@ -117,6 +146,37 @@ def test_api_read_endpoints_return_seeded_data(tmp_path, monkeypatch):
         resp = client.get(path)
         assert resp.status_code == 200, path
         assert resp.is_json, path
+
+
+def test_api_messages_rejects_invalid_band(tmp_path, monkeypatch):
+    client = _seed(tmp_path, monkeypatch)
+    _login(client)
+    resp = client.get("/api/messages?band=bad")
+    assert resp.status_code == 400
+    assert resp.get_json() == {"error": "invalid_band"}
+
+
+def test_api_messages_account_filter_allowed_and_forbidden(tmp_path, monkeypatch):
+    client = _seed(tmp_path, monkeypatch)
+
+    def scoped_users():
+        return {
+            "member": dashboard._User(
+                "member", "plain:ignored", False, frozenset({"acct"})
+            )
+        }
+
+    monkeypatch.setattr(dashboard, "_load_users", scoped_users)
+    with client.session_transaction() as sess:
+        sess["user"] = "member"
+
+    resp = client.get("/api/messages?account=acct")
+    assert resp.status_code == 200
+    assert {item["account"] for item in resp.get_json()["items"]} == {"acct"}
+
+    resp = client.get("/api/messages?account=other")
+    assert resp.status_code == 403
+    assert resp.get_json() == {"error": "forbidden_account"}
 
 
 def test_api_respects_scoped_user(tmp_path, monkeypatch):
