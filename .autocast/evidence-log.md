@@ -5,10 +5,10 @@
 - date: 2026-09-10
 - tool: OpenCode
 - model: openai/gpt-5.5
-- route: review-only, then standard adoption setup
+- route: review-only, standard adoption setup, secure-change API foundation
 - risk: secure
 - branch: main
-- commit: pending
+- commit: c720d0e for AutoCast adoption; API foundation pending
 
 ## Pilot Review Evidence
 
@@ -52,6 +52,35 @@ Files changed:
 |---|---|---|
 | `git status --short --branch` | passed | Only `.autocast/` is untracked after adoption setup. |
 | `git diff --stat` | passed | No tracked runtime files changed. |
+| `python -m py_compile filter\dashboard.py filter\filter.py filter\test_api.py` | passed | Syntax check for API changes. |
+| `python -m pytest filter` | passed | 16 tests passed, including new API tests. |
+
+## API Foundation Evidence
+
+Files changed:
+
+- `filter/dashboard.py`
+- `filter/test_api.py`
+
+Endpoints added:
+
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `GET /api/summary`
+- `GET /api/messages`
+- `GET /api/events`
+- `GET /api/learned`
+- `GET /api/accounts`
+- `GET /api/rspamd/stats`
+- `GET /api/safe-mode`
+
+Security controls verified by tests:
+
+- Protected API routes return JSON `401` when unauthenticated.
+- Account passwords are masked in `/api/accounts`.
+- Scoped users only see allowed account data.
+- Non-admin users cannot access `/api/rspamd/stats`.
 
 ## Security Gates
 

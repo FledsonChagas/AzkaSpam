@@ -39,6 +39,7 @@ import yaml
 from flask import (
     Flask,
     Response,
+    jsonify,
     redirect,
     render_template_string,
     request,
@@ -242,6 +243,28 @@ def _requires_admin(view):
     return wrapped
 
 
+def _api_requires_auth(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user"):
+            return jsonify({"error": "unauthorized"}), 401
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _api_requires_admin(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user"):
+            return jsonify({"error": "unauthorized"}), 401
+        if not _current_scope()[0]:
+            return jsonify({"error": "admin_required"}), 403
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
 def _csrf_token() -> str:
     token = session.get("csrf")
     if not token:
@@ -339,6 +362,43 @@ def _config_accounts_table(parsed: dict) -> str:
         + ("".join(rows) or '<tr><td colspan=5 class=muted>(none)</td></tr>')
         + "</table></div></div>"
     )
+
+
+def _as_int_arg(name: str, default: int, *, minimum: int = 0, maximum: int = 1000) -> int:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _row_to_dict(row: sqlite3.Row) -> dict:
+    return {key: row[key] for key in row.keys()}
+
+
+def _configured_accounts() -> tuple[list[dict], str | None]:
+    try:
+        parsed, errors = _validate_config_text(CONFIG_PATH.read_text())
+    except OSError as ex:
+        return ([], str(ex))
+    if errors:
+        return ([], "; ".join(errors))
+    out = []
+    for account in parsed.get("accounts") or []:
+        if not isinstance(account, dict):
+            continue
+        masked = dict(account)
+        masked["password_set"] = bool(masked.pop("password", None))
+        out.append(masked)
+    return (out, None)
+
+
+def _account_allowed(name: str) -> bool:
+    admin, accounts = _current_scope()
+    return admin or name in accounts
 
 
 def _fmt_ts(ts):
@@ -703,6 +763,272 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_login():
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
+    if not _check_login(username, password):
+        return jsonify({"error": "invalid_credentials"}), 401
+    session.clear()
+    session["user"] = username
+    return jsonify({
+        "authenticated": True,
+        "user": username,
+        "is_admin": _current_scope()[0],
+        "csrf_token": _csrf_token(),
+    })
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_logout():
+    session.clear()
+    return jsonify({"authenticated": False})
+
+
+@app.route("/api/auth/me")
+def api_me():
+    user = session.get("user")
+    if not user:
+        return jsonify({"authenticated": False})
+    is_admin, accounts = _current_scope()
+    return jsonify({
+        "authenticated": True,
+        "user": user,
+        "is_admin": is_admin,
+        "accounts": sorted(accounts),
+        "csrf_token": _csrf_token(),
+    })
+
+
+@app.route("/api/summary")
+@_api_requires_auth
+def api_summary():
+    now = int(time.time())
+    day = 86400
+    admin, _accts = _current_scope()
+    sc, sp = _scope_clause("AND")
+    scw, scwp = _scope_clause("WHERE")
+    with _db() as c:
+        def one(sql, params=()):
+            return c.execute(sql + sc, (*params, *sp)).fetchone()[0]
+
+        scanned_24h = one("SELECT COUNT(*) FROM events WHERE event='scan' AND ts>=?", (now - day,))
+        scanned_7d = one("SELECT COUNT(*) FROM events WHERE event='scan' AND ts>=?", (now - 7 * day,))
+        moved_24h = one("SELECT COUNT(*) FROM events WHERE event LIKE 'moved%' AND ts>=?", (now - day,))
+        scan_fail_24h = one("SELECT COUNT(*) FROM events WHERE event='scan_failed' AND ts>=?", (now - day,))
+        learn_fail_24h = one(
+            "SELECT COUNT(*) FROM events WHERE event IN ('learn_failed','learn_giveup') AND ts>=?",
+            (now - day,),
+        )
+        learn_spam_24h = one("SELECT COUNT(*) FROM events WHERE event='learn_spam' AND ts>=?", (now - day,))
+        learn_ham_24h = one("SELECT COUNT(*) FROM events WHERE event='learn_ham' AND ts>=?", (now - day,))
+        learn_spam_total = one("SELECT COUNT(*) FROM events WHERE event='learn_spam'")
+        learn_ham_total = one("SELECT COUNT(*) FROM events WHERE event='learn_ham'")
+        safe_modes = [
+            _row_to_dict(r) for r in c.execute(
+                "SELECT account, scope, entered_at, reason FROM safe_mode" + scw,
+                scwp,
+            ).fetchall()
+        ]
+        recent_learns = [
+            _row_to_dict(r) for r in c.execute(
+                "SELECT ts, account, event, message_id, detail FROM events "
+                "WHERE event IN ('learn_spam','learn_ham')" + sc
+                + " ORDER BY ts DESC LIMIT 15",
+                sp,
+            ).fetchall()
+        ]
+        scan_by_day_rows = c.execute(
+            "SELECT strftime('%Y-%m-%d', ts, 'unixepoch', 'localtime') d, "
+            "COUNT(*) count FROM events WHERE event='scan' AND ts>=?" + sc
+            + " GROUP BY d",
+            (now - 14 * day, *sp),
+        ).fetchall()
+    scan_by_day = {r["d"]: r["count"] for r in scan_by_day_rows}
+    trend = [
+        {"date": time.strftime("%Y-%m-%d", time.localtime(now - i * day)),
+         "scans": int(scan_by_day.get(time.strftime("%Y-%m-%d", time.localtime(now - i * day)), 0))}
+        for i in range(13, -1, -1)
+    ]
+    problems = []
+    if scan_fail_24h:
+        problems.append({"type": "scan_failed", "count": scan_fail_24h})
+    if learn_fail_24h:
+        problems.append({"type": "learn_failed", "count": learn_fail_24h})
+    if safe_modes:
+        problems.append({"type": "safe_mode", "count": len(safe_modes)})
+    return jsonify({
+        "generated_at": now,
+        "health": "degraded" if problems else "ok",
+        "problems": problems,
+        "kpis": {
+            "scanned_24h": scanned_24h,
+            "scanned_7d": scanned_7d,
+            "moved_24h": moved_24h,
+            "catch_rate_24h": moved_24h / scanned_24h if scanned_24h else None,
+            "scan_fail_24h": scan_fail_24h,
+            "learn_fail_24h": learn_fail_24h,
+            "learn_spam_24h": learn_spam_24h,
+            "learn_ham_24h": learn_ham_24h,
+            "learn_spam_total": learn_spam_total,
+            "learn_ham_total": learn_ham_total,
+        },
+        "scan_trend": trend,
+        "safe_modes": safe_modes,
+        "recent_learns": recent_learns,
+        "rspamd": _rspamd_stats() if admin else None,
+    })
+
+
+@app.route("/api/messages")
+@_api_requires_auth
+def api_messages():
+    band = request.args.get("band", "all")
+    where = ""
+    if band == "spam":
+        where = "AND our_score >= 8"
+    elif band == "mid":
+        where = "AND our_score BETWEEN 4 AND 8"
+    elif band == "low":
+        where = "AND our_score < 4"
+    elif band != "all":
+        return jsonify({"error": "invalid_band"}), 400
+    limit = _as_int_arg("limit", 200, minimum=1, maximum=1000)
+    offset = _as_int_arg("offset", 0, minimum=0, maximum=100000)
+    account = (request.args.get("account") or "").strip()
+    account_filter = ""
+    params: list = []
+    if account:
+        if not _account_allowed(account):
+            return jsonify({"error": "forbidden_account"}), 403
+        account_filter = "AND account=?"
+        params.append(account)
+    sc, sp = _scope_clause("AND")
+    with _db() as c:
+        rows = c.execute(
+            f"""
+            SELECT account, message_id, first_seen, last_seen, received_at,
+                   our_score, our_action, current_folder, sender, subject,
+                   learned_as, learned_at, pending_learn, pending_learn_at
+              FROM messages
+             WHERE our_score IS NOT NULL {where} {account_filter}{sc}
+             ORDER BY COALESCE(received_at, last_seen) DESC LIMIT ? OFFSET ?
+            """,
+            (*params, *sp, limit, offset),
+        ).fetchall()
+    return jsonify({"items": [_row_to_dict(r) for r in rows], "limit": limit, "offset": offset})
+
+
+@app.route("/api/events")
+@_api_requires_auth
+def api_events():
+    limit = _as_int_arg("limit", 300, minimum=1, maximum=1000)
+    offset = _as_int_arg("offset", 0, minimum=0, maximum=100000)
+    event = (request.args.get("event") or "").strip()
+    account = (request.args.get("account") or "").strip()
+    filters = []
+    params: list = []
+    if event:
+        filters.append("event=?")
+        params.append(event)
+    if account:
+        if not _account_allowed(account):
+            return jsonify({"error": "forbidden_account"}), 403
+        filters.append("account=?")
+        params.append(account)
+    sc, sp = _scope_clause("AND" if filters else "WHERE")
+    where = " WHERE " + " AND ".join(filters) if filters else ""
+    with _db() as c:
+        rows = c.execute(
+            "SELECT id, ts, account, event, message_id, detail FROM events"
+            + where + sc + " ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+            (*params, *sp, limit, offset),
+        ).fetchall()
+    return jsonify({"items": [_row_to_dict(r) for r in rows], "limit": limit, "offset": offset})
+
+
+@app.route("/api/learned")
+@_api_requires_auth
+def api_learned():
+    limit = _as_int_arg("limit", 300, minimum=1, maximum=1000)
+    offset = _as_int_arg("offset", 0, minimum=0, maximum=100000)
+    sc, sp = _scope_clause("AND")
+    with _db() as c:
+        rows = c.execute(
+            "SELECT id, ts, account, event, message_id, detail FROM events "
+            "WHERE event IN ('learn_spam','learn_ham','learn_giveup','learn_failed')"
+            + sc + " ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+            (*sp, limit, offset),
+        ).fetchall()
+    return jsonify({"items": [_row_to_dict(r) for r in rows], "limit": limit, "offset": offset})
+
+
+@app.route("/api/accounts")
+@_api_requires_auth
+def api_accounts():
+    now = int(time.time())
+    day = 86400
+    configured, config_error = _configured_accounts()
+    admin, scoped_accounts = _current_scope()
+    configured_by_name = {
+        str(a.get("name")): a for a in configured
+        if a.get("name") and (admin or str(a.get("name")) in scoped_accounts)
+    }
+    with _db() as c:
+        def grouped(sql, params=()):
+            return {r[0]: r[1] for r in c.execute(sql, params).fetchall()}
+
+        last = grouped("SELECT account, MAX(ts) FROM events GROUP BY account")
+        scans = grouped("SELECT account, COUNT(*) FROM events WHERE event='scan' AND ts>=? GROUP BY account", (now - day,))
+        learns = grouped("SELECT account, COUNT(*) FROM events WHERE event LIKE 'learn_%' AND ts>=? GROUP BY account", (now - day,))
+        spam_total = grouped("SELECT account, COUNT(*) FROM events WHERE event='learn_spam' GROUP BY account")
+        ham_total = grouped("SELECT account, COUNT(*) FROM events WHERE event='learn_ham' GROUP BY account")
+        fails = grouped("SELECT account, COUNT(*) FROM events WHERE event='scan_failed' AND ts>=? GROUP BY account", (now - day,))
+        safe: dict[str, list[dict]] = {}
+        for r in c.execute("SELECT account, scope, entered_at, reason FROM safe_mode"):
+            safe.setdefault(r["account"], []).append(_row_to_dict(r))
+    names = set(configured_by_name) | set(last) | set(safe)
+    if not admin:
+        names = {n for n in names if n in scoped_accounts}
+    items = []
+    for name in sorted(names):
+        items.append({
+            "name": name,
+            "configured": configured_by_name.get(name),
+            "last_activity_at": last.get(name),
+            "scans_24h": scans.get(name, 0),
+            "learns_24h": learns.get(name, 0),
+            "spam_learns_total": spam_total.get(name, 0),
+            "ham_learns_total": ham_total.get(name, 0),
+            "scan_fails_24h": fails.get(name, 0),
+            "safe_modes": safe.get(name, []),
+        })
+    return jsonify({"items": items, "config_error": config_error})
+
+
+@app.route("/api/rspamd/stats")
+@_api_requires_admin
+def api_rspamd_stats():
+    stats = _rspamd_stats()
+    if stats is None:
+        return jsonify({"available": False, "stats": None}), 503
+    return jsonify({"available": True, "stats": stats})
+
+
+@app.route("/api/safe-mode")
+@_api_requires_auth
+def api_safe_mode():
+    sc, sp = _scope_clause("WHERE")
+    with _db() as c:
+        rows = c.execute(
+            "SELECT account, scope, entered_at, reason FROM safe_mode" + sc
+            + " ORDER BY entered_at DESC",
+            sp,
+        ).fetchall()
+    return jsonify({"items": [_row_to_dict(r) for r in rows]})
 
 
 @app.route("/")
