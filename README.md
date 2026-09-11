@@ -346,7 +346,11 @@ override `defaults:` values; both override built-in defaults from `filter.py`.
 | Key | Default | Notes |
 | --- | --- | --- |
 | `imap_port` | `993` | port |
-| `ssl` | `true` | `false` = use port 143 with STARTTLS instead |
+| `ssl` | `true` | required; `false` is refused so IMAP credentials are never sent before TLS |
+
+AzkaSpam currently supports implicit TLS only, normally IMAP port 993. Plain
+IMAP and STARTTLS-on-143 are not enabled in this version because the filter must
+not risk sending mailbox credentials before an encrypted channel is established.
 
 ### Folder names
 
