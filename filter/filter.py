@@ -292,6 +292,12 @@ def load_accounts(path: Path) -> list[Account]:
 def validate_account(acc: Account) -> None:
     if acc.mode not in VALID_MODES:
         raise SystemExit(f"{acc.name}: invalid mode {acc.mode!r}")
+    if not acc.ssl:
+        raise SystemExit(
+            f"{acc.name}: ssl=false is not supported because it can send "
+            "IMAP credentials without an encrypted channel. Use implicit "
+            "TLS with ssl=true, usually on port 993."
+        )
     # acc.user is the bayes_user fallback when no explicit bayes_user is
     # configured, and the value ends up in a Delivered-To header we
     # inject into the rspamd /learn body. Reject CR/LF here for the same

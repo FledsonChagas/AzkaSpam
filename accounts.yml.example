@@ -28,6 +28,7 @@ accounts:
     imap_host: imap.your-mail-provider.example
     user: you@your-domain.example
     password: "REPLACE_ME"
+    # ssl: true       # required; plaintext IMAP login is refused
     # mode: shadow     # default; uncomment to set or change
     # move_grace_seconds: 0   # mode=move only; 0 = move spam out
     #                         # instantly (use once Bayes is trained)
