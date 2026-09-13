@@ -1,0 +1,6 @@
+autocast:
+  version: v0.10
+  source: https://github.com/FledsonChagas/AutoCast.git
+  path: .autocast/core
+  pinned_commit: fd1ec992f3ac3979b9fd67a95e2539dc1b472687
+  install_method: submodule

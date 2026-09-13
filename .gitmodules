@@ -1,0 +1,3 @@
+[submodule ".autocast/core"]
+	path = .autocast/core
+	url = https://github.com/FledsonChagas/AutoCast.git
