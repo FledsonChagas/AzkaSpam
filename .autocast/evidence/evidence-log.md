@@ -96,3 +96,56 @@ Security controls verified by tests:
 
 - Adoption artifacts do not fix existing security issues.
 - Critical changes remain required before exposing AzkaSpam beyond a trusted local environment.
+
+## AutoCast v0.10 Canonical Layout Evidence
+
+Run metadata:
+
+- branch: feat/autocast-canonical-layout
+- route: standard
+- profile: secure
+- commit: pending
+
+Task brief:
+
+- `.autocast/tasks/task-brief-autocast-canonical-layout.md`
+
+Framework source:
+
+- source: https://github.com/FledsonChagas/AutoCast.git
+- path: `.autocast/core`
+- install method: submodule
+- version: v0.10
+- pinned commit: fd1ec992f3ac3979b9fd67a95e2539dc1b472687
+
+Project-state migration:
+
+- `.autocast/README.md` -> `.autocast/AUTOCAST.md`
+- `.autocast/project-brief.md` -> `.autocast/project/project-brief.md`
+- `.autocast/task-brief-api-v1.md` -> `.autocast/tasks/task-brief-api-v1.md`
+- `.autocast/evidence-log.md` -> `.autocast/evidence/evidence-log.md`
+- `.autocast/decision-records.md` -> `.autocast/decisions/decision-records.md`
+- `.autocast/backlog-by-route.md` -> `.autocast/backlog/backlog-by-route.md`
+
+Security gates:
+
+- secrets checked: no project secrets added; framework is pinned by submodule commit.
+- dependency changes reviewed: no production dependency changes.
+- permission changes reviewed: no production permission changes.
+- trust boundaries reviewed: no runtime trust boundary changes.
+- residual risk recorded: yes.
+
+Commands run:
+
+| Command | Result | Notes |
+|---|---|---|
+| `git status --short --branch` | passed | Shows canonical layout moves, `.gitmodules`, and `.autocast/core` submodule changes. |
+| `python -m pytest filter` | environment failed | Global Python lacks project deps (`waitress`, `imapclient`); no test failures from changed files. |
+| `C:\Users\Micro\AppData\Local\Temp\opencode\spamfilter-venv\Scripts\python.exe -m pytest filter` | passed | 23 tests passed in dependency-isolated venv. |
+| `node .autocast/core/bin/autocast.mjs route --task "Adopt AutoCast canonical layout"` | passed | Classified as `standard`, risk `medium`, task type `feature`. |
+| `yaml.safe_load(.autocast/config.yml, .autocast/lock.yml)` | passed | AutoCast project YAML files parse. |
+
+Residual risk:
+
+- `.autocast/core` is a submodule; contributors must initialize submodules.
+- Future AutoCast upgrades should be isolated from product changes.
