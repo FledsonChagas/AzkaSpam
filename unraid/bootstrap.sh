@@ -70,7 +70,21 @@ fi
 chown "$APP_UID:$APP_GID" "$APP/accounts.yml"
 chmod 640 "$APP/accounts.yml"
 
-# 5. rspamd controller password (random, persistent). Both rspamd and the
+# 5. AzkaSpam secret key (random, persistent). The filter uses it to decrypt
+#    IMAP credentials stored in accounts.yml as password_encrypted.
+KEY_FILE="$APP/state/azkaspam.secret_key"
+if [ ! -f "$KEY_FILE" ]; then
+  echo "generating AzkaSpam IMAP credential encryption key"
+  ( umask 077 && {
+      openssl rand -base64 32 | tr '+/' '-_'
+    } > "$KEY_FILE.tmp"
+  )
+  mv "$KEY_FILE.tmp" "$KEY_FILE"
+fi
+chown "$APP_UID:$APP_GID" "$KEY_FILE"
+chmod 640 "$KEY_FILE"
+
+# 6. rspamd controller password (random, persistent). Both rspamd and the
 #    filter container read it from this file, so the user never sets it
 #    in the Unraid template.
 PW_FILE="$APP/state/controller.password"
@@ -89,7 +103,7 @@ fi
 chown "$APP_UID:$APP_GID" "$PW_FILE"
 chmod 640 "$PW_FILE"
 
-# 6. Render worker-controller.inc from the .template now (host side),
+# 7. Render worker-controller.inc from the .template now (host side),
 #    so the rspamd container can mount local.d/ as read-only and start
 #    with the official entrypoint - no cp/envsubst gymnastics.
 TEMPLATE="$APP/rspamd/local.d/worker-controller.inc.template"
@@ -104,7 +118,7 @@ if [ -f "$TEMPLATE" ]; then
   echo "rendered worker-controller.inc"
 fi
 
-# 7. Redis auth. Generate a persistent Redis password, render the redis
+# 8. Redis auth. Generate a persistent Redis password, render the redis
 #    server config (with requirepass) the redis container starts from,
 #    and render rspamd's redis client config with the matching password.
 REDIS_PW_FILE="$APP/state/redis.password"

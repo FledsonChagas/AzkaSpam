@@ -96,3 +96,42 @@ Security controls verified by tests:
 
 - Adoption artifacts do not fix existing security issues.
 - Critical changes remain required before exposing AzkaSpam beyond a trusted local environment.
+
+## Encrypted IMAP Credentials Evidence
+
+Run metadata:
+
+- branch: feat/encrypted-imap-credentials
+- route: critical-change
+- profile: critical
+- commit: pending
+
+Task brief:
+
+- `.autocast/task-brief-encrypted-imap-credentials.md`
+
+Decision:
+
+- Reject plaintext `password` in `accounts.yml`.
+- Require `password_encrypted` using Fernet tokens prefixed with `enc:v1:`.
+- Load key from `AZKASPAM_SECRET_KEY` or `state/azkaspam.secret_key`.
+- Use an interactive `encrypt-password` helper and reject password-as-argument
+  to avoid shell history and process-list leaks.
+
+Commands run:
+
+| Command | Result | Notes |
+|---|---|---|
+| `pip install -r filter\requirements.txt` | passed | Installed pinned `cryptography==50.0.1` in temporary venv. |
+| `python -m py_compile filter\dashboard.py filter\filter.py filter\bootstrap_train.py filter\test_config.py filter\test_api.py` | passed | Syntax check. |
+| `python -m pytest filter` | passed | 27 tests passed. |
+| `yaml.safe_load(accounts.yml.example)` | passed | Example YAML parses. |
+| `xml.etree.ElementTree.parse(unraid/*.xml)` | passed | Unraid XML templates parse. |
+
+Security gates:
+
+- secrets checked: no real secrets added; tests use generated Fernet keys and fixtures.
+- dependency changes reviewed: `cryptography` added and pinned.
+- permission changes reviewed: bootstrap writes `state/azkaspam.secret_key` with mode `640`.
+- trust boundaries reviewed: plaintext config is rejected before IMAP login.
+- residual risk recorded: key rotation and YAML-to-DB migration remain future work.

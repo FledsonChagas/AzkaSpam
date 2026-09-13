@@ -111,7 +111,7 @@ accounts:
   - name: your_name
     imap_host: ...
     user: ...
-    password: "..."
+    password_encrypted: "enc:v1:..."
     auto_special_folders: false
     junk: Spam-quarantine
     trash: Bin
@@ -143,8 +143,9 @@ The script is idempotent and does all of the following:
   (the `redis/` and `rspamd/data/` dirs are owned by the images' internal uids, mode 750)
 - Downloads the rspamd `local.d/*` configs from this repo (only if missing)
 - Seeds `accounts.yml` from `accounts.yml.example` (only if missing)
-- Generates random passwords into `state/controller.password` (rspamd controller)
-  and `state/redis.password` (Redis auth), only if missing
+- Generates random secrets into `state/azkaspam.secret_key` (IMAP credential
+  encryption), `state/controller.password` (rspamd controller), and
+  `state/redis.password` (Redis auth), only if missing
 - Renders `worker-controller.inc`, the rspamd `redis.conf` client config, and the
   Redis server config into `redis-config/redis.conf` with those passwords substituted in
 
@@ -164,9 +165,18 @@ curl -fsSL https://raw.githubusercontent.com/marcelverdult/imap-spamfilter/main/
 nano /mnt/user/appdata/spamfilter/accounts.yml
 ```
 
-Set `imap_host`, fill in each account's `user` / `password`, leave
-`mode: shadow` for the first week. This is the only file you have to
-edit by hand.
+Set `imap_host`, fill in each account's `user`, and paste an encrypted IMAP
+password into `password_encrypted`. The bootstrap script generated the key at
+`state/azkaspam.secret_key`; mount the same `state/` directory when encrypting:
+
+```bash
+docker run --rm -it \
+  -v /mnt/user/appdata/spamfilter/state:/state \
+  ghcr.io/marcelverdult/imap-spamfilter:latest encrypt-password
+```
+
+Leave `mode: shadow` for the first week. This is the only file you have to edit
+by hand.
 
 ### 2. Install the four templates
 
@@ -273,14 +283,16 @@ export SPAMFILTER_APP=/srv/spamfilter
 sed -i "s|/mnt/user/appdata/spamfilter|$SPAMFILTER_APP|g" docker-compose.yml
 
 # Run the bootstrap: it creates the directory layout, downloads and
-# renders the rspamd + redis configs, and generates the rspamd
-# controller and Redis passwords. SPAMFILTER_APP tells it where.
+# renders the rspamd + redis configs, and generates the AzkaSpam,
+# rspamd controller, and Redis secrets. SPAMFILTER_APP tells it where.
 bash unraid/bootstrap.sh
 
-# Edit the seeded account list (the only file you must touch by hand):
+docker compose pull        # use the prebuilt ghcr image
+
+# Generate password_encrypted with the same state dir/key, then edit accounts.yml:
+docker compose run --rm spamfilter encrypt-password
 nano $SPAMFILTER_APP/accounts.yml
 
-docker compose pull        # use the prebuilt ghcr image
 docker compose up -d
 docker compose logs -f spamfilter
 ```
@@ -289,9 +301,9 @@ docker compose logs -f spamfilter
 rspamd `worker-controller.inc`, the rspamd Redis client config, and
 the Redis server config — so the compose stack just mounts what it
 produced, exactly like the Unraid path. Re-run it after pulling config
-changes from the repo. `.env` is optional: leave `RSPAMD_PASSWORD`
-unset and the filter reads the bootstrap-generated
-`state/controller.password`.
+changes from the repo. `.env` is optional: leave `AZKASPAM_SECRET_KEY` and
+`RSPAMD_PASSWORD` unset and the filter reads the bootstrap-generated
+`state/azkaspam.secret_key` and `state/controller.password`.
 
 The compose file matches the Unraid layout one-for-one, so backups,
 docs, and the SQLite audit queries all apply the same way. Pick one
@@ -339,7 +351,7 @@ override `defaults:` values; both override built-in defaults from `filter.py`.
 | `name` | `marcel` | label used in logs and SQLite, must be unique |
 | `imap_host` | `imap.example.de` | hostname only, no scheme |
 | `user` | `you@example.de` | login username (usually the full address) |
-| `password` | `"..."` | quote to keep YAML happy with special chars |
+| `password_encrypted` | `"enc:v1:..."` | encrypted IMAP password generated with `python filter.py encrypt-password` |
 
 ### Connection
 
@@ -432,15 +444,15 @@ omit the field stay isolated under their own IMAP user.
 accounts:
   - name: marcel_main
     user: marcel@verdult.de
-    password: "..."
+    password_encrypted: "enc:v1:..."
     bayes_user: marcel-pool        # shared
   - name: marcel_work
     user: work@verdult.de
-    password: "..."
+    password_encrypted: "enc:v1:..."
     bayes_user: marcel-pool        # shared (same value)
   - name: family_member
     user: kid@verdult.de
-    password: "..."
+    password_encrypted: "enc:v1:..."
     # no bayes_user -> isolated, keyed by kid@verdult.de
 ```
 
@@ -458,12 +470,13 @@ Everything stateful lives under `/mnt/user/appdata/spamfilter/`:
 
 ```
 /mnt/user/appdata/spamfilter/
-├── accounts.yml                # account list and per-account overrides (SECRETS)
+├── accounts.yml                # account list; IMAP passwords are encrypted
 ├── redis/                      # Bayes corpus, fuzzy hashes, neural weights
 ├── redis-config/redis.conf     # rendered Redis server config (bootstrap.sh)
 ├── state/
 │   ├── spamfilter.db           # SQLite audit log + state
 │   ├── heartbeat               # epoch updated each loop (healthcheck source)
+│   ├── azkaspam.secret_key     # decrypts accounts.yml password_encrypted values
 │   ├── controller.password     # generated rspamd controller password
 │   ├── redis.password          # generated Redis password
 │   ├── dashboard_secret        # generated dashboard session secret
@@ -473,7 +486,9 @@ Everything stateful lives under `/mnt/user/appdata/spamfilter/`:
     └── data/                   # rspamd-managed caches
 ```
 
-Back up `redis/`, `state/`, and `accounts.yml`. Skip `rspamd/data/` and
+Back up `redis/`, `state/`, and `accounts.yml`. Losing
+`state/azkaspam.secret_key` means encrypted IMAP passwords cannot be decrypted.
+Skip `rspamd/data/` and
 `redis-config/` (both regenerate — the latter is re-rendered by
 `bootstrap.sh` from `state/redis.password`). Unraid's built-in **CA
 Backup** plugin pointed at the appdata path is sufficient.
@@ -635,8 +650,9 @@ backups of that whole tree preserve:
 - Redis AOF + RDB (Bayes tokens — the actual training)
 - rspamd `/var/lib/rspamd` cache (incl. neural-meta weights, which take
   days of confident decisions to rebuild from scratch)
-- accounts.yml, the rspamd controller password, and the Redis password
-  (`state/controller.password`, `state/redis.password`)
+- accounts.yml, the AzkaSpam credential encryption key, the rspamd controller
+  password, and the Redis password (`state/azkaspam.secret_key`,
+  `state/controller.password`, `state/redis.password`)
 
 On Unraid, install the **Appdata Backup** Community App (by `KluthR`)
 and schedule it nightly. Set "Stop container before backup" for all

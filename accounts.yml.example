@@ -1,7 +1,10 @@
 # Copy to accounts.yml and fill in real credentials.
 # accounts.yml is gitignored. Keep it out of version control.
+# IMAP passwords must be encrypted with AZKASPAM_SECRET_KEY:
+#   docker compose run --rm spamfilter encrypt-password
+# Paste the resulting enc:v1:... value into password_encrypted.
 #
-# Minimum required per account: name, imap_host, user, password.
+# Minimum required per account: name, imap_host, user, password_encrypted.
 # Every other field falls back to a built-in default
 # (mode=shadow, threshold=8.0, junk_retention_days=10, ...).
 # Full list of overridable keys: see "Configuration reference" in README.md.
@@ -27,7 +30,7 @@ accounts:
   - name: your_name
     imap_host: imap.your-mail-provider.example
     user: you@your-domain.example
-    password: "REPLACE_ME"
+    password_encrypted: "enc:v1:REPLACE_WITH_ENCRYPTED_PASSWORD"
     # ssl: true       # required; plaintext IMAP login is refused
     # mode: shadow     # default; uncomment to set or change
     # move_grace_seconds: 0   # mode=move only; 0 = move spam out
@@ -47,15 +50,15 @@ accounts:
 #   accounts:
 #     - name: marcel_main
 #       user: marcel@verdult.de
-#       password: "..."
+#       password_encrypted: "enc:v1:..."
 #       bayes_user: marcel-pool      # shared
 #     - name: marcel_work
 #       user: work@verdult.de
-#       password: "..."
+#       password_encrypted: "enc:v1:..."
 #       bayes_user: marcel-pool      # shared (same value)
 #     - name: family_member
 #       user: kid@verdult.de
-#       password: "..."
+#       password_encrypted: "enc:v1:..."
 #       # no bayes_user -> isolated, keyed by kid@verdult.de
 
 # Optional: shared overrides for all accounts above. Most users don't need this.

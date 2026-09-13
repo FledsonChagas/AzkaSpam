@@ -59,6 +59,7 @@ services:
       - RSPAMD_SCAN_URL=http://spamfilter-rspamd:11333/checkv2
       - RSPAMD_LEARN_URL=http://spamfilter-rspamd:11334
       - RSPAMD_PASSWORD=${RSPAMD_PASSWORD:-}
+      - AZKASPAM_SECRET_KEY=${AZKASPAM_SECRET_KEY:-}
       - STATE_DIR=/state
       - LOG_LEVEL=INFO
       - TZ=Europe/Berlin

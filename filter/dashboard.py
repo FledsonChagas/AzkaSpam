@@ -55,6 +55,7 @@ DB_PATH = STATE_DIR / "spamfilter.db"
 SECRET_PATH = STATE_DIR / "dashboard_secret"
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "/app/accounts.yml"))
 CONFIG_BACKUP_PATH = STATE_DIR / "accounts.yml.last-good"
+ENCRYPTED_SECRET_PREFIX = "enc:v1:"
 RSPAMD_CONTROLLER_URL = os.environ.get(
     "RSPAMD_LEARN_URL", "http://spamfilter-rspamd:11334"
 )
@@ -323,9 +324,21 @@ def _validate_config_text(text: str) -> tuple[dict, list[str]]:
         if not isinstance(account, dict):
             errors.append(f"{prefix} must be a mapping.")
             continue
-        for key in ("name", "imap_host", "user", "password"):
+        for key in ("name", "imap_host", "user"):
             if not account.get(key):
                 errors.append(f"{prefix}.{key} is required.")
+        if account.get("password"):
+            errors.append(
+                f"{prefix}.password is not supported; use password_encrypted."
+            )
+        encrypted = str(account.get("password_encrypted") or "").strip()
+        if not encrypted:
+            errors.append(f"{prefix}.password_encrypted is required.")
+        elif not encrypted.startswith(ENCRYPTED_SECRET_PREFIX):
+            errors.append(
+                f"{prefix}.password_encrypted must start with "
+                f"{ENCRYPTED_SECRET_PREFIX!r}."
+            )
         name = str(account.get("name") or "").strip()
         if name:
             if name in seen:
@@ -391,7 +404,8 @@ def _configured_accounts() -> tuple[list[dict], str | None]:
         if not isinstance(account, dict):
             continue
         masked = dict(account)
-        masked["password_set"] = bool(masked.pop("password", None))
+        masked.pop("password", None)
+        masked["password_set"] = bool(masked.pop("password_encrypted", None))
         out.append(masked)
     return (out, None)
 

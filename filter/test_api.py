@@ -24,12 +24,12 @@ def _seed(tmp_path, monkeypatch):
         "  - name: acct\n"
         "    imap_host: imap.example.com\n"
         "    user: user@example.com\n"
-        "    password: super-secret\n"
+        "    password_encrypted: enc:v1:test-token\n"
         "    mode: shadow\n"
         "  - name: other\n"
         "    imap_host: imap2.example.com\n"
         "    user: other@example.com\n"
-        "    password: other-secret\n"
+        "    password_encrypted: enc:v1:other-test-token\n"
     )
     monkeypatch.setattr(dashboard, "DB_PATH", db_path)
     monkeypatch.setattr(dashboard, "CONFIG_PATH", config_path)
@@ -130,6 +130,7 @@ def test_api_accounts_masks_passwords(tmp_path, monkeypatch):
     configured = {item["name"]: item["configured"] for item in items}
     assert configured["acct"]["password_set"] is True
     assert "password" not in configured["acct"]
+    assert "password_encrypted" not in configured["acct"]
 
 
 def test_api_read_endpoints_return_seeded_data(tmp_path, monkeypatch):
